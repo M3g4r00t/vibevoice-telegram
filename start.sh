@@ -30,7 +30,7 @@ if [ -f .env ]; then
   set +a
 fi
 
-export PYTHONPATH="/media/dennys/data-linux/projects/vibevoice-telegram/VibeVoice:$PYTHONPATH"
+export PYTHONPATH="/media/dennys/data-linux/projects/vibevoice-telegram/VibeVoice:${PYTHONPATH:-}"
 
 echo "Iniciando VibeVoice Telegram Bot..."
 ./vibevoice_env/bin/python3 bot.py
