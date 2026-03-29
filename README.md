@@ -55,18 +55,29 @@ cp .env.example .env
 TELEGRAM_TOKEN=tu_token_aqui
 ```
 
-## Uso
+## Uso rápido
 
-Iniciar el bot:
+Iniciar el bot (carga `.env`, ajusta `PYTHONPATH` y usa el venv):
 ```bash
-python bot.py
+bash start.sh
 ```
 
 ### Comandos del bot
 
-- `/start` - Iniciar el bot
-- `/help` - Ver ayuda
-- `/voices` - Ver voces disponibles
+- `/start`   – mensaje de bienvenida y defaults
+- `/help`    – ayuda y recordatorio de comandos
+- `/voices`  – lista voces disponibles
+- `/voice <nombre>` – cambia la voz (motor activo)
+- `/engine kokoro|vibevoice` – selecciona motor
+- `/vvsteps <2-10>` – pasos de difusión (solo VibeVoice). Por defecto: 5 (versión original).
+- `/debug on|off` – métricas de latencia (por defecto: off)
+
+### Valores por defecto
+- Motor: `vibevoice`
+- Modelo: `microsoft/VibeVoice-Realtime-0.5B`
+- Voz: `sp-Spk0_woman`
+- Pasos de difusión: 5
+- Debug: OFF
 
 ## Estructura del Proyecto
 
@@ -84,6 +95,8 @@ vibevoice-telegram/
 - El modelo VibeVoice-Realtime-0.5B es primarily para inglés, pero puede generar español con resultados variables.
 - Para mejor calidad en español, considera usar VibeVoice-TTS completo.
 - Se requiere GPU para tiempo real decente.
+- Si usas VibeVoice en CPU la latencia será alta.
+- Si ves `Conflict: terminated by other getUpdates request`, asegúrate de correr solo una instancia del bot.
 
 ## Licencia
 
