@@ -1,0 +1,23 @@
+# Environment and secrets
+.env
+.env.*
+
+# Python bytecode and caches
+__pycache__/
+*.pyc
+
+# Virtual environments
+vibevoice_env/
+venv/
+
+# Local artifacts
+outputs/
+cache/
+bot.log
+
+# Model weights / large assets
+models/
+*.wav
+*.pt
+*.bin
+venv/bin/accelerate

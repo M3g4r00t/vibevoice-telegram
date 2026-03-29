@@ -8,11 +8,13 @@ import os
 import re
 import torch
 import logging
+import time
 import asyncio
 from pathlib import Path
 from typing import Optional
 
 from telegram import Update, Voice
+from telegram.constants import ParseMode
 from telegram.ext import Application, CommandHandler, MessageHandler, filters, ContextTypes
 
 # Importar VibeVoice
@@ -34,6 +36,7 @@ logger = logging.getLogger(__name__)
 # Variables globales para el modelo
 model: Optional[VibeVoiceStreamingForConditionalGenerationInference] = None
 processor: Optional[VibeVoiceStreamingProcessor] = None
+debug_mode = False
 
 
 class VoiceManager:
@@ -89,11 +92,12 @@ async def load_model():
     
     # Cargar modelo
     if device == "cuda":
+        # Usa sdpa por compatibilidad; flash-attn no es obligatorio
         model = VibeVoiceStreamingForConditionalGenerationInference.from_pretrained(
             MODEL_PATH,
             torch_dtype=torch.bfloat16,
             device_map="cuda",
-            attn_implementation="flash_attention_2"
+            attn_implementation="sdpa"
         )
     elif device == "mps":
         model = VibeVoiceStreamingForConditionalGenerationInference.from_pretrained(
@@ -185,7 +189,8 @@ async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "1. Envíame cualquier texto en español\n"
         "2. Yo lo convertiré en audio\n"
         "3. Recibirás el archivo de audio\n\n"
-        "Puedes usar /voices para ver las voces disponibles.",
+        "Puedes usar /voices para ver las voces disponibles.\n"
+        "Activa métricas con /debug on (por defecto está off).",
         parse_mode="Markdown"
     )
 
@@ -193,12 +198,27 @@ async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
 async def voices_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Maneja el comando /voices"""
     voice_manager = VoiceManager()
-    voices_list = "\n".join([f"• {v}" for v in sorted(voice_manager.available_voices.keys())])
-    
+    voices_list = "\n".join([f"• <code>{v}</code>" for v in sorted(voice_manager.available_voices.keys())])
+
     await update.message.reply_text(
-        f"🎭 *Voces disponibles:*\n\n{voices_list}",
-        parse_mode="Markdown"
+        "🎭 <b>Voces disponibles:</b>\n\n" + voices_list,
+        parse_mode=ParseMode.HTML
     )
+
+
+async def debug_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Activa/desactiva modo debug (muestra latencia)."""
+    global debug_mode
+    if not context.args:
+        estado = "on" if debug_mode else "off"
+        await update.message.reply_text(f"Modo debug está {estado}. Usa /debug on|off")
+        return
+    arg = context.args[0].lower()
+    if arg not in ("on", "off"):
+        await update.message.reply_text("Usa /debug on o /debug off")
+        return
+    debug_mode = (arg == "on")
+    await update.message.reply_text(f"✅ Debug {arg}")
 
 
 async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -213,6 +233,7 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.chat.send_action("upload_voice")
     
     try:
+        t0 = time.time()
         # Generar audio
         audio_path = generate_audio(text)
         
@@ -222,6 +243,10 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
         
         # Limpiar archivo temporal
         os.remove(audio_path)
+        
+        if debug_mode:
+            dt = time.time() - t0
+            await update.message.reply_text(f"⏱️ Latencia: {dt:.2f}s")
         
     except Exception as e:
         logger.error(f"Error generando audio: {e}")
@@ -256,6 +281,7 @@ def main():
     application.add_handler(CommandHandler("start", start_command))
     application.add_handler(CommandHandler("help", help_command))
     application.add_handler(CommandHandler("voices", voices_command))
+    application.add_handler(CommandHandler("debug", debug_command))
     application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_text))
     application.add_error_handler(error_handler)
     
