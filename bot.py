@@ -2,6 +2,7 @@
 """
 VibeVoice Telegram Bot
 Un bot de Telegram que usa VibeVoice para generar audio en español.
+Ahora con transcripción de voz usando Whisper.
 """
 
 import os
@@ -10,12 +11,15 @@ import torch
 import logging
 import time
 import asyncio
+import tempfile
 from pathlib import Path
 from typing import Optional
 
 from telegram import Update, Voice
 from telegram.constants import ParseMode
 from telegram.ext import Application, CommandHandler, MessageHandler, filters, ContextTypes
+
+import whisper
 
 # Importar VibeVoice
 from vibevoice.modular.modeling_vibevoice_streaming_inference import VibeVoiceStreamingForConditionalGenerationInference
@@ -36,6 +40,7 @@ logger = logging.getLogger(__name__)
 # Variables globales para el modelo
 model: Optional[VibeVoiceStreamingForConditionalGenerationInference] = None
 processor: Optional[VibeVoiceStreamingProcessor] = None
+whisper_model = None  # Modelo para transcripción
 debug_mode = False
 
 
@@ -72,10 +77,10 @@ class VoiceManager:
 
 
 async def load_model():
-    """Carga el modelo VibeVoice"""
-    global model, processor
+    """Carga el modelo VibeVoice y Whisper"""
+    global model, processor, whisper_model
     
-    logger.info(f"Cargando modelo desde {MODEL_PATH}...")
+    logger.info(f"Cargando modelo VibeVoice desde {MODEL_PATH}...")
     
     # Determinar dispositivo
     if torch.cuda.is_available():
@@ -117,7 +122,25 @@ async def load_model():
     model.eval()
     model.set_ddpm_inference_steps(num_steps=5)
     
-    logger.info("Modelo cargado correctamente")
+    logger.info("Modelo VibeVoice cargado correctamente")
+    
+    # Cargar modelo Whisper para transcripción
+    logger.info("Cargando modelo Whisper para transcripción...")
+    whisper_device = "cuda" if torch.cuda.is_available() else "cpu"
+    whisper_model = whisper.load_model("medium", device=whisper_device)
+    logger.info(f"Modelo Whisper cargado en {whisper_device}")
+
+
+def transcribe_audio(audio_path: str) -> str:
+    """Transcribe audio a texto usando Whisper"""
+    global whisper_model
+    
+    if whisper_model is None:
+        raise RuntimeError("Modelo Whisper no cargado")
+    
+    # Transcribir
+    result = whisper_model.transcribe(audio_path, language="es")
+    return result["text"].strip()
 
 
 def generate_audio(text: str, voice_name: str = VOICE_NAME) -> str:
@@ -174,7 +197,9 @@ async def start_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Maneja el comando /start"""
     await update.message.reply_text(
         "🎙️ ¡Hola! Soy el bot de VibeVoice.\n\n"
-        "Envíame un texto y lo convertiré en audio usando IA.\n\n"
+        "Puedo hacer dos cosas:\n"
+        "• 📝→🎤 Envíame texto y lo convertiré en audio\n"
+        "• 🎤→📝 Envíame un mensaje de voz y lo transcribiré\n\n"
         "Comandos disponibles:\n"
         "/start - Ver este mensaje\n"
         "/voices - Ver voces disponibles\n"
@@ -186,9 +211,12 @@ async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Maneja el comando /help"""
     await update.message.reply_text(
         "📖 *Cómo usarme:*\n\n"
-        "1. Envíame cualquier texto en español\n"
-        "2. Yo lo convertiré en audio\n"
-        "3. Recibirás el archivo de audio\n\n"
+        "*Texto a voz (TTS):*\n"
+        "1. Envíame cualquier texto\n"
+        "2. Yo lo convertiré en audio\n\n"
+        "*Voz a texto (Transcripción):*\n"
+        "1. Envíame un mensaje de voz\n"
+        "2. Yo lo transcribiré a texto\n\n"
         "Puedes usar /voices para ver las voces disponibles.\n"
         "Activa métricas con /debug on (por defecto está off).",
         parse_mode="Markdown"
@@ -255,6 +283,54 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
         )
 
 
+async def handle_voice(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Maneja mensajes de voz - los transcribe a texto"""
+    voice = update.message.voice
+    
+    if not voice:
+        return
+    
+    # Enviar mensaje de "escribiendo"
+    await update.message.chat.send_action("typing")
+    
+    try:
+        t0 = time.time()
+        
+        # Descargar el archivo de voz
+        voice_file = await context.bot.get_file(voice.file_id)
+        
+        # Guardar temporalmente
+        with tempfile.NamedTemporaryFile(suffix=".ogg", delete=False) as tmp_file:
+            await voice_file.download_to_drive(tmp_file.name)
+            tmp_path = tmp_file.name
+        
+        try:
+            # Transcribir
+            transcription = transcribe_audio(tmp_path)
+            
+            if debug_mode:
+                dt = time.time() - t0
+                await update.message.reply_text(
+                    f"📝 *Transcripción:*\n\n{transcription}\n\n⏱️ Tiempo: {dt:.2f}s",
+                    parse_mode="Markdown"
+                )
+            else:
+                await update.message.reply_text(
+                    f"📝 *Transcripción:*\n\n{transcription}",
+                    parse_mode="Markdown"
+                )
+        finally:
+            # Limpiar archivo temporal
+            if os.path.exists(tmp_path):
+                os.remove(tmp_path)
+        
+    except Exception as e:
+        logger.error(f"Error transcribiendo audio: {e}")
+        await update.message.reply_text(
+            f"❌ Error al transcribir: {str(e)}"
+        )
+
+
 async def error_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Maneja errores"""
     logger.error(f"Error: {context.error}")
@@ -283,6 +359,7 @@ def main():
     application.add_handler(CommandHandler("voices", voices_command))
     application.add_handler(CommandHandler("debug", debug_command))
     application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_text))
+    application.add_handler(MessageHandler(filters.VOICE, handle_voice))
     application.add_error_handler(error_handler)
     
     # Cargar modelo al iniciar
